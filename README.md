@@ -34,7 +34,8 @@ Prerequisites
 Installation
 
 1. Clone the repository:
-
+   git clone https://github.com/loridj11/SLT-bridge.git
+   cd SLT-bridge
    
 2. Install dependencies with requirements.txt:
    pip install -r requirements.txt
