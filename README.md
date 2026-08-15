@@ -34,8 +34,7 @@ Prerequisites
 Installation
 
 1. Clone the repository:
-   git clone https://github.com/your-username/spotify-lyrics-bridge.git
-   cd spotify-lyrics-bridge
+
    
 2. Install dependencies with requirements.txt:
    pip install -r requirements.txt
@@ -133,6 +132,8 @@ Returns detailed disk and entry statistics for global_cache.json and line_cache.
 POST /cache/clear?confirm=yes
 Clears the in-memory and disk caches (creates an automatic backup prior to deletion).
 Optional query param: &which=global|line|all (default: all).
+
+---
 
 License:
 This project is licensed under the GNU Lesser General Public License v3.0 (LGPLv3).
