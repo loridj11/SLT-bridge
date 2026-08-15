@@ -1,0 +1,18 @@
+# Dipendenze base (Windows + Linux)
+flask
+requests
+python-dotenv
+
+# Solo Windows: rilevamento Spotify via SMTC e notifiche desktop.
+# Su Linux questi due pacchetti vengono ignorati automaticamente da pip
+# grazie al marker "sys_platform == 'win32'" — nessuna azione richiesta.
+winsdk; sys_platform == "win32"
+win10toast; sys_platform == "win32"
+
+# --- Dipendenze di sistema (NON installabili con pip, install manuale) ---
+# Linux: per il rilevamento Spotify serve 'playerctl'
+#   Debian/Ubuntu:  sudo apt install playerctl
+#   Fedora:          sudo dnf install playerctl
+#   Arch:            sudo pacman -S playerctl
+# Linux: per le notifiche desktop serve 'notify-send' (pacchetto 'libnotify-bin'
+# su Debian/Ubuntu, di solito già preinstallato sulle distro con ambiente desktop)

@@ -1,0 +1,36 @@
+{
+  "lm_studio_url": "http://127.0.0.1:1234/v1/chat/completions",
+  "model_name": "translategemma-12b-it",
+  "chunk_size": 10,
+  "max_workers": 4,
+  "lm_timeout": 120,
+  "default_target_lang": "en",
+  "smtc_fallback_to_sole_playing_session": true,
+  "server": {
+    "host": "127.0.0.1",
+    "port": 5000
+  },
+  "logging": {
+    "log_dir": "logs",
+    "log_file": "bridge.log",
+    "level": "INFO",
+    "max_bytes": 5242880,
+    "backup_count": 3,
+    "console_verbose": true,
+    "color_console": true,
+    "force_color_console": false
+  },
+  "cache_backup": {
+    "enabled": true,
+    "every_n_saves": 20,
+    "keep_backups": 3
+  },
+  "notifications": {
+    "enabled": true,
+    "slow_translation_threshold_seconds": 25
+  },
+  "prefetch": {
+    "enabled": false,
+    "poll_interval_seconds": 5
+  }
+}
