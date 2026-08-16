@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify
 import requests
 
-__version__ = "1.3.4"
+__version__ = "1.4.0"
 
 app = Flask(__name__)
 
@@ -31,10 +31,12 @@ BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
 DEFAULT_CONFIG = {
     "lm_studio_url": "http://127.0.0.1:1234/v1/chat/completions",
+    "lm_studio_models_url": "",  # override esplicito (vedi check_lm_studio_health); vuoto = deduci da lm_studio_url
     "model_name": "translategemma-12b-it",
     "chunk_size": 10,
     "max_workers": 4,
     "lm_timeout": 120,
+    "max_lines_per_request": 2000,
     "default_target_lang": "en",
     "smtc_fallback_to_sole_playing_session": True,
     "server": {
@@ -140,7 +142,36 @@ def load_config():
     return cfg
 
 
+def _validate_config(cfg):
+    """Controlli di sanità minimi sui valori numerici critici, eseguiti subito
+    dopo il caricamento. Senza questo, un valore assurdo in config.json (es.
+    'chunk_size': 0 o 'max_workers': -1) farebbe crashare lo script più avanti
+    con un errore criptico (range() step=0, ThreadPoolExecutor negativo, ecc.)
+    invece che con un messaggio chiaro all'avvio. Corregge in-place con un
+    valore di fallback sicuro e stampa un warning; non solleva eccezioni,
+    così il bridge parte comunque con valori ragionevoli."""
+    fixes = {
+        "chunk_size": (int, 1, DEFAULT_CONFIG["chunk_size"]),
+        "max_workers": (int, 1, DEFAULT_CONFIG["max_workers"]),
+        "lm_timeout": (int, 1, DEFAULT_CONFIG["lm_timeout"]),
+    }
+    for key, (_type, min_val, fallback) in fixes.items():
+        val = cfg.get(key)
+        if not isinstance(val, _type) or isinstance(val, bool) or val < min_val:
+            print(f"[WARN CONFIG] '{key}'={val!r} non valido (richiesto {_type.__name__} >= {min_val}), uso il default {fallback}.")
+            cfg[key] = fallback
+
+    max_lines = cfg.get("max_lines_per_request", DEFAULT_CONFIG.get("max_lines_per_request", 2000))
+    if not isinstance(max_lines, int) or isinstance(max_lines, bool) or max_lines < 1:
+        print(f"[WARN CONFIG] 'max_lines_per_request'={max_lines!r} non valido, uso il default 2000.")
+        max_lines = 2000
+    cfg["max_lines_per_request"] = max_lines
+
+    return cfg
+
+
 CONFIG = load_config()
+CONFIG = _validate_config(CONFIG)
 
 
 # =====================================================================
@@ -269,6 +300,7 @@ def setup_logging(cfg):
 logger = setup_logging(CONFIG)
 
 LM_STUDIO_URL = CONFIG["lm_studio_url"]
+LM_STUDIO_MODELS_URL = CONFIG.get("lm_studio_models_url") or ""
 MODEL_NAME = CONFIG["model_name"]
 
 # --- OTTIMIZZAZIONI PER MASSIMA VELOCITÀ ---
@@ -276,6 +308,12 @@ CHUNK_SIZE = CONFIG["chunk_size"]        # righe per blocco
 MAX_WORKERS = CONFIG["max_workers"]      # slot paralleli sfruttati su LM Studio
 LM_TIMEOUT = CONFIG["lm_timeout"]        # evita timeout durante i picchi di lavoro
 
+# Pool di thread PERSISTENTE per tutta la vita del processo, invece di crearne
+# uno nuovo (con relativo overhead di spawn/teardown thread) ad ogni singola
+# richiesta HTTP: process_hybrid_translation() lo riusa semplicemente.
+TRANSLATION_EXECUTOR = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+
+MAX_LINES_PER_REQUEST = CONFIG.get("max_lines_per_request", 2000)
 DEFAULT_TARGET_LANG = CONFIG.get("default_target_lang", "en")
 SMTC_FALLBACK_TO_SOLE_PLAYING_SESSION = CONFIG.get("smtc_fallback_to_sole_playing_session", True)
 SERVER_CONFIG = CONFIG.get("server", {})
@@ -286,6 +324,7 @@ PREFETCH_CONFIG = CONFIG.get("prefetch", {})
 logger.info(
     f"[CONFIG] lm_studio_url={LM_STUDIO_URL} | model={MODEL_NAME} | "
     f"chunk_size={CHUNK_SIZE} | max_workers={MAX_WORKERS} | timeout={LM_TIMEOUT}s | "
+    f"max_lines_per_request={MAX_LINES_PER_REQUEST} | "
     f"target_default={DEFAULT_TARGET_LANG} | "
     f"server={SERVER_CONFIG.get('host', '127.0.0.1')}:{SERVER_CONFIG.get('port', 5000)}"
 )
@@ -1187,16 +1226,20 @@ def process_hybrid_translation(lines, target_lang, spotify_context=None):
         chunk_start_orig_idx = indices_needing_ai[i]
         tasks.append((chunk_lines, target_lang, chunk_start_orig_idx, spotify_context))
 
-    # PASSAGGIO 3: Esecuzione PARALLELA fino a MAX_WORKERS task simultanei
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        results = list(executor.map(translate_chunk_worker, tasks))
+    # PASSAGGIO 3: Esecuzione PARALLELA sul pool persistente (vedi TRANSLATION_EXECUTOR)
+    results = list(TRANSLATION_EXECUTOR.map(translate_chunk_worker, tasks))
 
-    # PASSAGGIO 4: Riassemblaggio delle righe tradotte mantenendo l'ordine originale
+    # PASSAGGIO 4: Riassemblaggio delle righe tradotte mantenendo l'ordine originale.
+    # NOTA: executor.map() restituisce i risultati nello STESSO ORDINE dei task
+    # inviati (non l'ordine di completamento), quindi possiamo abbinare 'results'
+    # e 'tasks' posizionalmente con zip() invece di richercare start_orig_idx con
+    # .index() dentro indices_needing_ai (che sarebbe O(n) ad ogni blocco, quindi
+    # O(n²) sull'intero riassemblaggio per canzoni lunghe).
     block_elapsed_times = []
-    for start_orig_idx, translated_chunk, elapsed in results:
+    for task_i, (start_orig_idx, translated_chunk, elapsed) in zip(range(0, ai_count, CHUNK_SIZE), results):
         block_elapsed_times.append(elapsed)
         for sub_i, translated_text in enumerate(translated_chunk):
-            target_original_idx = indices_needing_ai[indices_needing_ai.index(start_orig_idx) + sub_i]
+            target_original_idx = indices_needing_ai[task_i + sub_i]
             final_output[target_original_idx] = translated_text
 
     for i in range(total_lines):
@@ -1230,8 +1273,14 @@ def check_lm_studio_health(timeout=5):
     un server LM Studio attivo) per sapere subito se il backend è
     raggiungibile, invece di scoprirlo solo alla prima richiesta di
     traduzione. Aggiorna anche lo STATE globale per l'endpoint /status."""
-    base_url = LM_STUDIO_URL.rsplit("/chat/completions", 1)[0]
-    models_url = f"{base_url}/models"
+    if LM_STUDIO_MODELS_URL:
+        # Override esplicito da config.json ('lm_studio_models_url'): utile se
+        # 'lm_studio_url' punta a un proxy/path custom su cui l'euristica
+        # sotto (basata sul suffisso '/chat/completions') non funzionerebbe.
+        models_url = LM_STUDIO_MODELS_URL
+    else:
+        base_url = LM_STUDIO_URL.rsplit("/chat/completions", 1)[0]
+        models_url = f"{base_url}/models"
     reachable = False
     try:
         r = requests.get(models_url, timeout=timeout)
@@ -1427,6 +1476,20 @@ def proxy_handler(path):
 
         if isinstance(lines, str):
             lines = [lines]
+
+        if not isinstance(lines, list) or not all(isinstance(l, str) for l in lines):
+            return make_cors_response(
+                {"error": "Il campo 'q'/'text' deve essere una stringa o una lista di stringhe."}, 400
+            )
+
+        if len(lines) > MAX_LINES_PER_REQUEST:
+            logger.warning(
+                f"[WARN] Richiesta rifiutata: {len(lines)} righe > limite di {MAX_LINES_PER_REQUEST} "
+                f"(configurabile via 'max_lines_per_request' in config.json)."
+            )
+            return make_cors_response(
+                {"error": f"Troppe righe nella richiesta ({len(lines)} > {MAX_LINES_PER_REQUEST})."}, 413
+            )
 
         with STATE_LOCK:
             STATE["total_requests"] += 1

@@ -1,9 +1,11 @@
 {
   "lm_studio_url": "http://127.0.0.1:1234/v1/chat/completions",
+  "lm_studio_models_url": "",
   "model_name": "translategemma-12b-it",
   "chunk_size": 10,
   "max_workers": 4,
   "lm_timeout": 120,
+  "max_lines_per_request": 2000,
   "default_target_lang": "en",
   "smtc_fallback_to_sole_playing_session": true,
   "server": {
